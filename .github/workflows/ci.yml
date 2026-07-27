@@ -17,20 +17,18 @@ jobs:
       - name: Create .env file
         run: |
           cd backend
-          cat > .env << 'EOF'
-          APP_NAME=公司桌面IT服务台
-          DEBUG=true
-          SECRET_KEY=test-secret-key
-          DB_TYPE=sqlite
-          JWT_SECRET_KEY=test-jwt-secret-key
-          JWT_ALGORITHM=HS256
-          JWT_EXPIRE_MINUTES=480
-          TRUST_PROXY=false
-          DEFAULT_SLA_HOURS=4
-          SLA_WARNING_PERCENT=50
-          ACCEPT_TIMEOUT_MINUTES=5
-          FRONTEND_URL=http://localhost:5173
-          EOF
+          echo 'APP_NAME=公司桌面IT服务台' > .env
+          echo 'DEBUG=true' >> .env
+          echo 'SECRET_KEY=test-secret-key' >> .env
+          echo 'DB_TYPE=sqlite' >> .env
+          echo 'JWT_SECRET_KEY=test-jwt-secret-key' >> .env
+          echo 'JWT_ALGORITHM=HS256' >> .env
+          echo 'JWT_EXPIRE_MINUTES=480' >> .env
+          echo 'TRUST_PROXY=false' >> .env
+          echo 'DEFAULT_SLA_HOURS=4' >> .env
+          echo 'SLA_WARNING_PERCENT=50' >> .env
+          echo 'ACCEPT_TIMEOUT_MINUTES=5' >> .env
+          echo 'FRONTEND_URL=http://localhost:5173' >> .env
       - name: Install dependencies
         run: |
           cd backend
