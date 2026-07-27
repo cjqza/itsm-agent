@@ -17,7 +17,7 @@ jobs:
       - name: Create .env file
         run: |
           cd backend
-          cat > .env << EOF
+          cat > .env << 'EOF'
           APP_NAME=公司桌面IT服务台
           DEBUG=true
           SECRET_KEY=test-secret-key
@@ -57,7 +57,7 @@ jobs:
       - name: Install dependencies
         run: |
           cd ${{ matrix.frontend }}
-          npm ci
+          npm install
       - name: Build
         run: |
           cd ${{ matrix.frontend }}
