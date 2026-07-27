@@ -24,16 +24,23 @@ jobs:
           cd backend
           python run.py &
           SERVER_PID=$!
+          echo "Waiting for server to start..."
           for i in $(seq 1 30); do
             if curl -s http://localhost:8000/health > /dev/null 2>&1; then
-              echo "Server is ready"
+              echo "Server is ready after $((i*2)) seconds"
               break
             fi
-            echo "Waiting for server... ($i/30)"
+            if [ $i -eq 30 ]; then
+              echo "Server failed to start after 60 seconds"
+              kill $SERVER_PID 2>/dev/null || true
+              exit 1
+            fi
             sleep 2
           done
+          echo "Running tests..."
           python tests/test_api.py
           TEST_EXIT=$?
+          echo "Tests completed with exit code: $TEST_EXIT"
           kill $SERVER_PID 2>/dev/null || true
           exit $TEST_EXIT
 
