@@ -14,12 +14,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Create .env file
+        run: |
+          cd backend
+          cp .env.example .env
+          # Set test-friendly values
+          sed -i 's/DB_TYPE=.*/DB_TYPE=sqlite/' .env
+          sed -i 's/DEBUG=.*/DEBUG=true/' .env
+          sed -i 's/JWT_SECRET_KEY=.*/JWT_SECRET_KEY=test-secret-key-for-ci/' .env
       - name: Install dependencies
         run: cd backend && pip install -r requirements.txt
       - name: Run tests
-        run: cd backend && python run.py &
-          sleep 5 &&
+        run: |
+          cd backend
+          python run.py &
+          sleep 10
           python tests/test_api.py
+          kill %1 2>/dev/null || true
 
   frontend-build:
     runs-on: ubuntu-latest
@@ -31,8 +42,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install and build
-        run: |
-          cd ${{ matrix.frontend }}
-          npm ci
-          npm run build
+      - name: Install dependencies
+        run: cd ${{ matrix.frontend }} && npm ci
+      - name: Build
+        run: cd ${{ matrix.frontend }} && npm run build
