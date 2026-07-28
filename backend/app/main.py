@@ -206,6 +206,9 @@ async def rate_limit_middleware(request: Request, call_next):
         return await call_next(request)
     if path == "/ws":
         return await call_next(request)
+    # 批量操作接口免限流（已内置状态检查，不会滥用）
+    if "/tickets/batch" in path:
+        return await call_next(request)
 
     # 测试模式跳过限流（仅限 localhost）
     if request.headers.get("X-Test-Mode", "").lower() == "true":
@@ -239,18 +242,44 @@ async def rate_limit_middleware(request: Request, call_next):
                 status_code=429,
                 content={"detail": "请求过于频繁，请稍后再试"},
             )
-    # AI 聊天接口: 可配置限流（默认20次/分钟/IP）
+    # AI 聊天接口: 按用户限流（已登录按 user_id，未登录按 IP）
     elif "/ai/chat" in path:
-        if not await _check_rate_limit(client_ip, path, limit=settings.AI_RATE_LIMIT_PER_MINUTE, window=60):
-            logger.warning(f"限流: {client_ip} AI 聊天接口请求过于频繁")
+        rate_key = client_ip  # 默认按 IP
+        try:
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.startswith("Bearer "):
+                from jose import jwt
+                token = auth_header[7:]
+                payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=["HS256"])
+                uid = payload.get("sub")
+                if uid:
+                    rate_key = f"user:{uid}"
+        except Exception:
+            pass  # token 无效则 fallback 到 IP 限流
+        if not await _check_rate_limit(rate_key, path, limit=settings.AI_RATE_LIMIT_PER_MINUTE, window=60):
+            logger.warning(f"限流: {rate_key} AI 聊天接口请求过于频繁")
             return JSONResponse(
                 status_code=429,
                 content={"detail": "AI 聊天请求过于频繁，请稍后再试"},
             )
-    # 其他API: 120次/分钟
+    # 其他API: 按用户限流（已登录用户 300次/分钟，未登录 120次/分钟）
     elif path.startswith("/api/") or path.startswith("/admin/"):
-        if not await _check_rate_limit(client_ip, path, limit=120, window=60):
-            logger.warning(f"限流: {client_ip} API请求过于频繁")
+        api_rate_key = client_ip
+        api_limit = 120
+        try:
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.startswith("Bearer "):
+                from jose import jwt
+                token = auth_header[7:]
+                payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=["HS256"])
+                uid = payload.get("sub")
+                if uid:
+                    api_rate_key = f"user:{uid}"
+                    api_limit = 300  # 已登录用户更高限额
+        except Exception:
+            pass
+        if not await _check_rate_limit(api_rate_key, path, limit=api_limit, window=60):
+            logger.warning(f"限流: {api_rate_key} API请求过于频繁")
             return JSONResponse(
                 status_code=429,
                 content={"detail": "请求过于频繁，请稍后再试"},

@@ -196,6 +196,11 @@ class TicketService:
             selectinload(Ticket.creator),
             selectinload(Ticket.assignee),
             selectinload(Ticket.category),
+            selectinload(Ticket.business_module),
+            selectinload(Ticket.property),
+            selectinload(Ticket.symptom),
+            selectinload(Ticket.cause),
+            selectinload(Ticket.solution),
         )
         if conditions:
             query = query.where(*conditions)

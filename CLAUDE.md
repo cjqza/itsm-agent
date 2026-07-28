@@ -70,7 +70,7 @@ docker-compose up -d
 - **Cache**: `app/utils/redis.py` — Redis cache with automatic fallback to in-memory when Redis unavailable
 - **WebSocket**: Two separate WS systems — global notification WS in `utils/websocket.py`, chat-specific WS in `api/chat.py`. Per-user connection limit: 5.
 - **Background tasks**: `app/tasks/sla_checker.py` — APScheduler runs every minute to update SLA status colors
-- **AI module**: `app/ai/` — RAG pipeline with ChromaDB + BGE embeddings + LLM (Qwen2.5/DeepSeek)
+- **AI module**: `app/ai/` — RAG pipeline with ChromaDB + BGE embeddings + LLM (Qwen2.5/DeepSeek) + Session Memory
 
 ### Frontend Shared Layer (`shared/`)
 
@@ -167,33 +167,54 @@ All logins require CAPTCHA. In tests, use `X-Test-Mode: true` header to bypass.
 
 ## AI Intelligent Customer Service
 
-The system includes a RAG (Retrieval-Augmented Generation) AI chatbot for intelligent customer service.
+The system includes a RAG (Retrieval-Augmented Generation) AI chatbot with **three-layer session memory**.
 
 ### Architecture
 ```
-User question → Embedding → ChromaDB search → BGE-Reranker → LLM → Answer
+User question → Session Memory → Embedding → ChromaDB search → BGE-Reranker → LLM → Answer
+                    │
+                    ├─ Sliding Window (last 5 turns, exact replay)
+                    ├─ Summary (old conversations condensed)
+                    └─ Metadata (device model, OS, issue category, scenario)
 ```
 
 ### Components (`backend/app/ai/`)
+- `memory.py` — `SessionMemoryManager`: Redis-backed session memory (TTL 30min, fallback to in-memory dict). Three layers: sliding window (10 messages), auto-summary (triggered at 8+ messages), metadata extraction (every 3 turns via LLM)
+- `rag.py` — `RAGPipeline`: retrieve → dedup docs against history → build_messages → generate/stream. Integrates memory manager. Sanitizes LLM output to strip fake conversation turns
+- `llm.py` — LLM abstraction: GGUF (ctransformers), Transformers (HuggingFace), DeepSeek (API). All return `{answer, thinking}` with `<think>` tag parsing
 - `embeddings.py` — BGE-small-zh-v1.5 (local CPU) or OpenAI API
 - `vectorstore.py` — ChromaDB persistent storage
-- `llm.py` — Qwen2.5 (local CPU via ctransformers/transformers) or DeepSeek API
-- `rag.py` — RAG pipeline (retrieve → rerank → generate)
 - `knowledge.py` — Knowledge base builder (tickets + FAQ docs)
-- `prompts.py` — Prompt templates
+- `prompts.py` — Prompt templates with anti-repetition and anti-simulation instructions
+- `models.py` — Pydantic schemas: `AIChatRequest` (question, history, stream, session_id), `AIChatResponse` (answer, thinking, sources)
 
 ### API Endpoints
-- `POST /api/ai/chat` — AI chat (supports SSE streaming)
+- `POST /api/ai/chat` — AI chat (supports SSE streaming, session_id for memory)
 - `POST /api/ai/knowledge/sync` — Sync knowledge base (admin only)
 - `GET /api/ai/knowledge/status` — Knowledge base status
 
+### SSE Event Types (streaming)
+`sources` → `thinking` → `token` (×N) → `done` | `error`
+
+### Anti-Repetition / Anti-Simulation
+The prompts include explicit instructions to prevent:
+1. **Repeating previous answers** — "不要重复对话历史中已经提供过的建议"
+2. **Simulating user feedback** — "禁止代替用户说话，只基于用户实际发送的内容回答"
+3. **Generating fake conversation turns** — "只输出你自己的一条回复，绝对不要输出 `<|user|>` 等角色标签"
+4. **Repetitive closings** — "禁止结尾写多句感谢/祝福/告别，最多一句话结尾"
+5. **Post-processing sanitizer** — `_sanitize_answer()` and streaming filter detect and truncate `<|user|>`, `<|assistant|>`, `User:`, `Assistant:` etc.
+
 ### Configuration
 ```env
-AI_LLM_PROVIDER=transformers          # or deepseek
-AI_LLM_MODEL_PATH=./models/Qwen2.5-1.5B-Instruct
+AI_LLM_PROVIDER=deepseek          # or transformers/gguf
+AI_LLM_MODEL_NAME=deepseek-chat
+AI_LLM_API_KEY=sk-xxx
 AI_EMBEDDING_PROVIDER=bge
-AI_EMBEDDING_MODEL=./models/bge-small-zh-v1.5
+AI_EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
 AI_VECTORSTORE_PATH=./chroma_db
+AI_RAG_TOP_K=5
+AI_RAG_SCORE_THRESHOLD=0.5
+AI_RAG_MAX_HISTORY_TURNS=5
 ```
 
 ### Knowledge Base
@@ -222,6 +243,8 @@ AI_VECTORSTORE_PATH=./chroma_db
 **Login always requires CAPTCHA**: `LoginRequest` requires `captcha_id` and `captcha_text`. Frontend must load captcha via `GET /api/auth/captcha` before showing login form.
 
 **ChromaDB embedding**: Always pass `embedding_function=NullEmbeddingFunction()` (512-dim) to `get_or_create_collection` to avoid ChromaDB downloading its default onnx model.
+
+**AI memory system**: `SessionMemoryManager` stores sessions in Redis (key: `ai:session:{id}`, TTL 1800s). The `_build_messages()` method assembles: `[system_prompt + memory_context] → [sliding_window] → [current_question + RAG_docs]`. RAG docs are deduplicated against the sliding window to prevent LLM from repeating previous answers.
 
 ## Common Issues
 
@@ -253,6 +276,7 @@ Copy `backend/.env.example` to `backend/.env`. Key vars:
 - `REDIS_URL`: Redis connection (empty = use in-memory fallback)
 - `TRUST_PROXY`: `false` (default) — set to `true` behind reverse proxy to trust X-Forwarded-For
 - `CORS_ORIGINS`: Comma-separated allowed origins (default: localhost ports)
-- `AI_LLM_PROVIDER`: `transformers` (default) or `deepseek`
+- `AI_LLM_PROVIDER`: `deepseek` (default) or `transformers` or `gguf`
+- `AI_LLM_API_KEY`: DeepSeek API key (required for `deepseek` provider)
 - `AI_EMBEDDING_PROVIDER`: `bge` (default) or `openai`
 - `AI_VECTORSTORE_PATH`: ChromaDB storage path (default: `./chroma_db`)

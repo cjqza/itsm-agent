@@ -28,6 +28,7 @@
                   clearable
                   style="width: 260px"
                   size="small"
+                  @input="handleSearchDebounced"
                   @keyup.enter="handleSearch"
                   @clear="handleSearchClear"
                 >
@@ -756,6 +757,13 @@ async function loadUsers() {
   } finally {
     loading.value = false
   }
+}
+
+// 搜索防抖（300ms）
+let _searchTimer = null
+function handleSearchDebounced() {
+  clearTimeout(_searchTimer)
+  _searchTimer = setTimeout(() => handleSearch(), 300)
 }
 
 function handleSearch() {

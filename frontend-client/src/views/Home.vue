@@ -193,12 +193,20 @@ let streamAbortController = null
 const STORAGE_KEY = 'home_chat_messages'
 const ROOM_KEY = 'home_chat_room_id'
 const TICKET_KEY = 'home_chat_ticket_id'
+const SESSION_ID_KEY = 'home_chat_session_id'
 
 let parsedMessages = []
 try { parsedMessages = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]') } catch (e) { parsedMessages = [] }
 const messages = ref(parsedMessages)
 const currentRoomId = ref(localStorage.getItem(ROOM_KEY) || null)
 const currentTicketId = ref(localStorage.getItem(TICKET_KEY) || null)
+
+// 会话 ID（服务端记忆系统使用）
+function generateSessionId() {
+  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+const sessionId = ref(localStorage.getItem(SESSION_ID_KEY) || generateSessionId())
+localStorage.setItem(SESSION_ID_KEY, sessionId.value)
 
 // 消息变化时自动保存
 watch(messages, (val) => {
@@ -223,6 +231,9 @@ function resetChat() {
   localStorage.removeItem(STORAGE_KEY)
   localStorage.removeItem(ROOM_KEY)
   localStorage.removeItem(TICKET_KEY)
+  // 生成新的会话 ID（服务端记忆重新开始）
+  sessionId.value = generateSessionId()
+  localStorage.setItem(SESSION_ID_KEY, sessionId.value)
 }
 
 // 评价
@@ -299,7 +310,7 @@ function getBotReply(text) {
 async function handleCategorySelect(category) {
   // 添加用户选择消息
   messages.value.push({ role: 'user', text: `${category.icon} ${category.name}`, type: 'text' })
-  scrollToBottom()
+  scrollToBottom(true)
 
   waitingReply.value = true
   try {
@@ -343,9 +354,19 @@ async function handleCategorySelect(category) {
   scrollToBottom()
 }
 
-function scrollToBottom() {
+function isNearBottom() {
+  if (!chatRef.value) return true
+  const el = chatRef.value
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 100
+}
+
+function scrollToBottom(force = false) {
   nextTick(() => {
-    if (chatRef.value) chatRef.value.scrollTop = chatRef.value.scrollHeight
+    if (!chatRef.value) return
+    // 只在用户已经在底部时自动滚动，或强制滚动时
+    if (force || isNearBottom()) {
+      chatRef.value.scrollTop = chatRef.value.scrollHeight
+    }
   })
 }
 
@@ -412,7 +433,7 @@ async function sendMessage() {
     if (text.includes(keyword)) {
       messages.value.push({ role: 'user', text, type: 'text' })
       userInput.value = ''
-      scrollToBottom()
+      scrollToBottom(true)
       messages.value.push({ role: 'bot', text: '好的，我来帮您创建工单。请先选择问题类型：', type: 'category-select' })
       scrollToBottom()
       return
@@ -422,24 +443,10 @@ async function sendMessage() {
   // 正常消息 → 调用 AI 智能客服
   messages.value.push({ role: 'user', text, type: 'text' })
   userInput.value = ''
-  scrollToBottom()
+  scrollToBottom(true)
 
-  // 构建对话历史（最近 5 轮，只取文本消息）
-  const history = []
-  const textMsgs = messages.value.filter(m => m.type === 'text' && (m.role === 'user' || m.role === 'bot'))
-  const recentMsgs = textMsgs.slice(-10) // 最近 5 轮 = 10 条消息
-  for (const m of recentMsgs) {
-    if (m.role === 'user') {
-      history.push({ role: 'user', content: m.text })
-    } else if (m.role === 'bot') {
-      // 去掉 <think>...</think> 标签，只保留回答内容
-      let content = m.text || ''
-      content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
-      if (content) {
-        history.push({ role: 'assistant', content })
-      }
-    }
-  }
+  // 会话记忆由服务端管理，不再构建 history
+  // 只保留兼容字段（session_id 优先）
 
   // 添加 AI 消息占位（流式追加）
   const aiMsgIndex = messages.value.length
@@ -461,7 +468,7 @@ async function sendMessage() {
 
   try {
     const token = localStorage.getItem('token')
-    const response = await aiApi.chatStream({ question: text, history }, token, streamAbortController.signal)
+    const response = await aiApi.chatStream({ question: text, session_id: sessionId.value }, token, streamAbortController.signal)
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)

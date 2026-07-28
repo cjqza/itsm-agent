@@ -38,7 +38,10 @@ async def ai_chat(
         if req.stream:
             # 流式返回 SSE
             return StreamingResponse(
-                pipeline.stream_query(req.question, req.history),
+                pipeline.stream_query(
+                    req.question, req.history,
+                    session_id=req.session_id,
+                ),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -48,7 +51,10 @@ async def ai_chat(
             )
         else:
             # 普通模式
-            result = await pipeline.query(req.question, req.history)
+            result = await pipeline.query(
+                req.question, req.history,
+                session_id=req.session_id,
+            )
             return AIChatResponse(**result)
     except HTTPException:
         raise

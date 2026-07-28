@@ -30,9 +30,16 @@ async def list_categories_public(
     db: AsyncSession = Depends(get_db),
 ):
     """公开的分类列表（无需 admin 权限，任何登录用户可访问）"""
+    from app.utils.cache import cache_get, cache_set
+
+    # 尝试缓存
+    cached = await cache_get("categories:public", ttl=300)
+    if cached is not None:
+        return cached
+
     result = await db.execute(select(Category).order_by(Category.sort_order))
     categories = result.scalars().all()
-    return [
+    data = [
         {
             "id": c.id,
             "name": c.name,
@@ -41,6 +48,9 @@ async def list_categories_public(
         }
         for c in categories
     ]
+
+    await cache_set("categories:public", data, ttl=300)
+    return data
 
 
 @router.get("/business-modules")
@@ -631,3 +641,104 @@ async def urge_ticket(
             logger.warning(f"WebSocket催办通知失败: {e}")
 
     return {"success": True, "message": "催办已发送"}
+
+
+# ============ 批量操作 ============
+
+# 批量操作允许的状态映射
+BATCH_VALID_STATES = {
+    "accept": [TicketStatus.PENDING],
+    "resolve": [TicketStatus.PROCESSING],
+}
+
+# 批量操作的目标状态
+BATCH_TARGET_STATES = {
+    "accept": TicketStatus.ACCEPTED,
+    "resolve": TicketStatus.RESOLVED_PENDING_REVIEW,
+}
+
+
+class BatchStatusUpdate(BaseModel):
+    """批量状态更新请求"""
+    ticket_ids: list[int]
+    action: str  # accept / resolve
+
+
+@router.post("/tickets/batch")
+async def batch_update_tickets(
+    data: BatchStatusUpdate,
+    current_user: User = Depends(require_permission("itsm_access")),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量处理工单（接单/解决）
+
+    智能处理：预检查状态，跳过已处理的工单，只处理符合条件的。
+    一次请求处理多张工单，减少批量操作时的 API 调用次数。
+    """
+    if not data.ticket_ids:
+        raise HTTPException(status_code=400, detail="工单列表不能为空")
+    if len(data.ticket_ids) > 100:
+        raise HTTPException(status_code=400, detail="单次最多处理100张工单")
+    if data.action not in ("accept", "resolve"):
+        raise HTTPException(status_code=400, detail="action 必须是 accept 或 resolve")
+
+    valid_states = BATCH_VALID_STATES[data.action]
+    target_state = BATCH_TARGET_STATES[data.action]
+
+    # 一次性查询所有工单
+    result = await db.execute(
+        select(Ticket).where(Ticket.id.in_(data.ticket_ids))
+    )
+    tickets = {t.id: t for t in result.scalars().all()}
+
+    results = {"success": [], "skipped": [], "failed": []}
+
+    for ticket_id in data.ticket_ids:
+        ticket = tickets.get(ticket_id)
+        if not ticket:
+            results["failed"].append({"ticket_id": ticket_id, "error": "工单不存在"})
+            continue
+
+        # 跳过已处于目标状态的工单
+        if ticket.status == target_state:
+            results["skipped"].append({"ticket_id": ticket_id, "reason": f"已是{target_state.value}状态"})
+            continue
+
+        # 检查当前状态是否允许操作
+        if ticket.status not in valid_states:
+            results["skipped"].append({
+                "ticket_id": ticket_id,
+                "reason": f"当前状态{ticket.status.value}不允许{data.action}，需要: {', '.join(s.value for s in valid_states)}"
+            })
+            continue
+
+        try:
+            if data.action == "accept":
+                await ticket_service.accept_ticket(db, ticket_id, current_user.id)
+            elif data.action == "resolve":
+                await ticket_service.resolve_ticket(db, ticket_id, current_user.id)
+            results["success"].append(ticket_id)
+        except Exception as e:
+            results["failed"].append({"ticket_id": ticket_id, "error": str(e)})
+
+    await db.commit()
+
+    # 批量 WebSocket 通知（合并为一次广播）
+    if results["success"]:
+        try:
+            from app.utils.websocket import ws_manager
+            await ws_manager.notify_ticket_update({
+                "action": f"batch_{data.action}",
+                "ticket_ids": results["success"],
+                "count": len(results["success"]),
+            })
+        except Exception as e:
+            logger.warning(f"批量WebSocket通知失败: {e}")
+
+    return {
+        "success": True,
+        "processed": len(results["success"]),
+        "skipped": len(results["skipped"]),
+        "failed": len(results["failed"]),
+        "details": results,
+    }

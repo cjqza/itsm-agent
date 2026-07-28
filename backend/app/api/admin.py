@@ -651,9 +651,20 @@ async def review_account_request(
 def make_crud_router(
     model, create_schema, update_schema, out_schema,
     name: str, name_zh: str, prefix: str,
+    cache_keys: list[str] = None,
 ):
-    """生成CRUD路由的工厂函数"""
+    """生成CRUD路由的工厂函数
+
+    Args:
+        cache_keys: 数据变更时需要清除的缓存键列表
+    """
     crud_router = APIRouter(prefix=f"/api/admin{prefix}", tags=[f"后台管理-{name_zh}"])
+
+    async def _invalidate_cache():
+        if cache_keys:
+            from app.utils.cache import cache_invalidate
+            for key in cache_keys:
+                await cache_invalidate(key)
 
     @crud_router.get("/")
     async def list_items(
@@ -673,11 +684,11 @@ def make_crud_router(
         current_user: User = Depends(require_permission("admin_access")),
         db: AsyncSession = Depends(get_db),
     ):
-        # 过滤掉模型不支持的字段
         dump = {k: v for k, v in data.model_dump().items() if hasattr(model, k)}
         item = model(**dump, created_by=current_user.id)
         db.add(item)
         await db.commit()
+        await _invalidate_cache()
         return {"success": True, "id": item.id}
 
     @crud_router.get("/{item_id}")
@@ -709,6 +720,7 @@ def make_crud_router(
                 setattr(item, key, value)
 
         await db.commit()
+        await _invalidate_cache()
         return {"success": True}
 
     @crud_router.delete("/{item_id}")
@@ -724,13 +736,14 @@ def make_crud_router(
 
         await db.delete(item)
         await db.commit()
+        await _invalidate_cache()
         return {"success": True}
 
     return crud_router
 
 
 # 注册各分类的CRUD路由
-category_router = make_crud_router(Category, CategoryCreate, CategoryUpdate, CategoryOut, "category", "管理单元", "/categories")
+category_router = make_crud_router(Category, CategoryCreate, CategoryUpdate, CategoryOut, "category", "管理单元", "/categories", cache_keys=["categories:public"])
 business_module_router = make_crud_router(BusinessModule, BusinessModuleCreate, BusinessModuleUpdate, BusinessModuleOut, "business_module", "业务模块", "/business-modules")
 property_router = make_crud_router(Property, GenericItemCreate, GenericItemUpdate, GenericItemOut, "property", "性质", "/properties")
 symptom_router = make_crud_router(Symptom, GenericItemCreate, GenericItemUpdate, GenericItemOut, "symptom", "症状", "/symptoms")

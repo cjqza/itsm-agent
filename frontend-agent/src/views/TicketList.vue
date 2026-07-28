@@ -79,7 +79,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/store/user'
 import { ticketApi } from '@/api'
@@ -95,6 +95,14 @@ const pageSize = ref(20)
 const total = ref(0)
 const keyword = ref('')
 const filters = reactive({ status: '' })
+
+// 搜索防抖（300ms）
+let searchTimer = null
+watch(keyword, () => {
+  clearTimeout(searchTimer)
+  page.value = 1
+  searchTimer = setTimeout(() => loadTickets(), 300)
+})
 
 onMounted(() => loadTickets())
 

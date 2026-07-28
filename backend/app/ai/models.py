@@ -7,8 +7,9 @@ from pydantic import BaseModel, Field
 class AIChatRequest(BaseModel):
     """AI 聊天请求"""
     question: str = Field(..., min_length=1, max_length=2000, description="用户问题")
-    history: list[dict] = Field(default_factory=list, description="历史消息列表")
+    history: list[dict] = Field(default_factory=list, description="历史消息列表（兼容旧接口，session_id 优先）")
     stream: bool = Field(default=False, description="是否流式返回")
+    session_id: str = Field(default="", description="会话ID（启用服务端记忆系统）")
 
 
 class AIChatResponse(BaseModel):
